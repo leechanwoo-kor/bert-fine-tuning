@@ -5,14 +5,11 @@
 - [목차](#목차)
 
 - [서론](#서론)
-    - [역사](##역사)
     - [BERT란 무엇인가?](##BERT란-무엇인가?)
     - [Fine-Tuning의 장점](##-Fine-Tuning의-장점)
         - [NLP에서의 변화](###-NLP에서의-변화)
 
 # 서론
-
-## 역사
 
 2018년은 NLP에서 획기적인 해였다. Allen AI의 ELMO, OpenAI의 Open-GPT와 구글의 BERT와 같은 모델은 연구자들이 최소한의 fine-tuning으로 기존 벤치마크하던 모델을 능가했다. 그리고 더 적은 데이터와 더 적은 계산 시간으로 pre-training된 모델을 제공하여 쉽게 fine-tuning된 우수한 성능을 생성할 수 있었다.
 
