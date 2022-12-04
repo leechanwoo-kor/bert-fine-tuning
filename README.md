@@ -14,6 +14,13 @@
 - [2. CoLA 데이터셋 불러오기](#2-cola-데이터셋-불러오기)
     - [2.1. 다운로드 및 추출](#21-다운로드-및-추출)
     - [2.2. 구문 분석](#22-구문-분석)
+- [3. 토큰화 및 입력 포맷](#3-토큰화-및-입력-포맷)
+    - [3.1. BERT 토큰화기](#31-bert-토큰화기)
+    - [3.2. Required Formatting](#32-required-formatting)
+        - [스페셜 토큰](#스페셜-토큰)
+        - [문장 길이 및 어텐션 마스크](#문장-길이-및-어텐션-마스크)
+    - [3.3. 데이터 세트 토큰화](#33-데이터-세트-토큰화)
+    - [3.4. 학습 및 검증 분할](#34-학습-및-검증-분할)
 
 # 서론
 
@@ -249,3 +256,263 @@ df.loc[df.label == 0].sample(5)[['sentence', 'label']]
 sentences = df.sentence.values
 labels = df.label.values
 ```
+
+
+# 3. 토큰화 및 입력 포맷
+
+이 섹션에서는 데이터 세트를 BERT가 훈련할 수 있는 형식으로 변환할 것이다.
+
+## 3.1. BERT 토큰화기
+
+BERT에 텍스트를 공급하려면 토큰으로 분할한 다음 토큰을 토큰화기 어휘의 인덱스에 매핑해야 합니다.
+
+토큰화는 BERT에 포함된 토큰화기에서 수행해야 합니다. 아래 셀에서 다운로드합니다. 여기서는 "케이스 없는" 버전을 사용할 것입니다.
+
+```Python
+from transformers import BertTokenizer
+
+# Load the BERT tokenizer.
+print('Loading BERT tokenizer...')
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
+```
+
+```
+Loading BERT tokenizer...
+Downloading: 100%
+232k/232k [00:00<00:00, 3.15MB/s]
+Downloading: 100%
+28.0/28.0 [00:00<00:00, 380B/s]
+Downloading: 100%
+570/570 [00:00<00:00, 7.98kB/s]
+```
+
+출력을 보기 위해 한 문장에 토큰화기를 적용해 봅시다.
+
+```Python
+# Print the original sentence.
+print(' Original: ', sentences[0])
+
+# Print the sentence split into tokens.
+print('Tokenized: ', tokenizer.tokenize(sentences[0]))
+
+# Print the sentence mapped to token ids.
+print('Token IDs: ', tokenizer.convert_tokens_to_ids(tokenizer.tokenize(sentences[0])))
+```
+
+```
+ Original:  Our friends won't buy this analysis, let alone the next one we propose.
+Tokenized:  ['our', 'friends', 'won', "'", 't', 'buy', 'this', 'analysis', ',', 'let', 'alone', 'the', 'next', 'one', 'we', 'propose', '.']
+Token IDs:  [2256, 2814, 2180, 1005, 1056, 4965, 2023, 4106, 1010, 2292, 2894, 1996, 2279, 2028, 2057, 16599, 1012]
+```
+
+실제로 모든 문장을 변환할 때 `tokenize`와 `convert_tokens_to_ids`를 별도로 호출하는 대신 `tokenize.encode` 함수를 사용하여 두 단계를 모두 처리합니다.
+
+그러나 이를 수행하기 전에 BERT의 포맷 요구 사항 중 일부에 대해 설명해야 합니다.
+
+## 3.2. Required Formatting
+
+위의 코드에서는 여기서 살펴볼 몇 가지 필수 형식 지정 단계를 생략했습니다.
+
+*참고 사항: BERT에 대한 입력 형식은 내가 보기에 "과잉 지정"된 것처럼 보입니다. 중복되는 것처럼 보이거나 데이터에서 쉽게 추론할 수 있는 여러 정보를 제공해야 합니다. 우리가 명시적으로 제공하지 않아도 됩니다. 하지만 그것은 사실이고, 나는 내가 BERT 내부를 더 깊이 이해하게 되면 더 말이 될 것이라고 생각한다.*
+
+다음을 수행해야 합니다.
+
+1. 각 문장의 시작과 끝에 특별한 토큰을 추가하세요.
+2. 모든 문장을 하나의 일정한 길이로 패드하고 자릅니다.
+3. "attention mask"를 사용하여 실제 토큰과 패딩 토큰을 명시적으로 구별합니다.
+
+### 스페셜 토큰
+
+`[SEP]`
+
+모든 문장 끝에 스페셜 `[SEP]` 토큰을 추가해야 합니다.
+
+이 토큰은 BERT에 두 개의 개별 문장이 주어지고 무언가를 결정하도록 요청되는 두 문장 작업의 아티팩트이다(예: 문장 A의 질문에 대한 답을 문장 B에서 찾을 수 있습니까?).
+
+우리가 단문 입력만 있는데 토큰이 왜 아직도 필요한지는 아직 확실하지 않지만, 그렇습니다!
+
+<br>
+
+`[CLS]`
+
+분류 작업의 경우 모든 문장의 시작 부분에 스페셜 `[CLS]` 토큰을 추가해야 한다.
+
+이 토큰은 특별한 의미가 있습니다. BERT는 12개의 트랜스포머 레이어로 구성됩니다. 각 트랜스포머는 토큰 임베딩 목록을 가져와 출력에 동일한 수의 임베딩을 생성한다(물론 피쳐 값이 변경된다!).
+
+![image](https://user-images.githubusercontent.com/55765292/205487650-7876f63a-e42a-48c6-aede-15939b00a059.png)
+
+최종(12번째) 트랜스포머의 출력에서 분류기는 첫 번째 임베딩([CLS] 토큰에 해당)만 사용한다.
+
+> "모든 시퀀스의 첫 번째 토큰은 항상 스페셜 분류 토큰([CLS])입니다. 이 토큰에 해당하는 최종 은닉 상태는 분류 작업의 집계 시퀀스 표현으로 사용됩니다."([BERT 논문](https://arxiv.org/pdf/1810.04805.pdf)에서)
+
+최종 임베딩에 대해 풀링 전략을 시도해 볼 수 있지만, 이것은 필요하지 않다. BERT는 분류에만 이 [CLS] 토큰을 사용하도록 훈련되었기 때문에, 우리는 모델이 분류 단계에 필요한 모든 것을 단일 768 값 임베딩 벡터로 인코딩하도록 동기를 부여했다는 것을 알고 있다. 우리를 위한 풀링은 이미 끝났어요!
+
+### 문장 길이 및 어텐션 마스크
+
+데이터 세트의 문장은 분명히 다양한 길이를 가지고 있는데, BERT는 이것을 어떻게 처리할까요?
+
+BERT에는 두 가지 제약 조건이 있습니다.
+- 모든 문장은 고정된 단일 길이로 패딩되거나 잘려야 한다.
+- 최대 문장 길이는 512 토큰입니다.
+
+패딩은 BERT 어휘에서 인덱스 0에 있는 스페셜 `[PAD]` 토큰으로 수행됩니다. 아래 그림은 8개의 토큰 "MAX_LEN"으로 패딩하는 방법을 보여줍니다.
+
+![image](https://user-images.githubusercontent.com/55765292/205487988-f45c3a9f-fbb0-4197-a027-2dbda1f27102.png)
+
+"어텐션 마스크"는 단순히 어떤 토큰이 패딩이고 어떤 토큰이 패딩이 아닌지를 나타내는 1과 0의 배열입니다. (약간 중복되는 것 같지 않나요?) 이 마스크는 BERT의 "Self-Attention" 메커니즘에 이러한 PAD 토큰을 문장 해석에 통합하지 말라고 말한다.
+
+그러나 최대 길이는 훈련과 평가 속도에 영향을 미친다. 예를 들어, Tesla K80의 경우:
+
+`MAX_LEN = 128 --> Training epochs take ~5:28 each`
+
+`MAX_LEN = 64 --> Training epochs take ~2:57 each`
+
+
+## 3.3. 데이터 세트 토큰화
+
+트랜스포머 라이브러리는 대부분의 구문 분석 및 데이터 준비 단계를 처리할 수 있는 유용한 `encode` 함수를 제공합니다.
+
+그러나 텍스트를 인코딩할 준비가 되기 전에 패딩/잘라내기를 위한 **최대 문장 길이**를 결정해야 합니다.
+
+아래 셀은 최대 문장 길이를 측정하기 위해 데이터 세트의 토큰화 패스를 하나 수행합니다.
+
+```Python
+max_len = 0
+
+# For every sentence...
+for sent in sentences:
+
+    # Tokenize the text and add `[CLS]` and `[SEP]` tokens.
+    input_ids = tokenizer.encode(sent, add_special_tokens=True)
+
+    # Update the maximum sentence length.
+    max_len = max(max_len, len(input_ids))
+
+print('Max sentence length: ', max_len)
+```
+
+```
+Max sentence length:  47
+```
+
+혹시 더 긴 시험 문장이 있을 경우를 대비해서 최대 길이를 64로 설정하겠습니다.
+
+이제 실제 토큰화를 수행할 준비가 되었습니다.
+
+`tokenizer.encode_plus` 함수는 다음과 같은 여러 단계를 결합합니다.
+
+- 문장을 토큰으로 분할합니다.
+- 스페셜 `[CLS]` 및 `[SEP]` 토큰을 추가합니다.
+- 토큰을 ID에 매핑합니다.
+- 모든 문장을 같은 길이로 패드하거나 자릅니다.
+- 실제 토큰을 `[PAD]` 토큰과 명시적으로 구별하는 어텐션 마스크를 만듭니다.
+
+처음 네 가지 기능은 `tokenizer.encode`에 있지만 다섯 번째 항목(어텐션 마스크)을 얻기 위해 `tokenizer.encode_plus`를 사용하고 있습니다. 문서는 [여기](https://huggingface.co/docs/transformers/main_classes/tokenizer?highlight=encode_plus#transformers.PreTrainedTokenizer.encode_plus)에 있습니다.
+
+```Python
+# Tokenize all of the sentences and map the tokens to thier word IDs.
+input_ids = []
+attention_masks = []
+
+# For every sentence...
+for sent in sentences:
+    # `encode_plus` will:
+    #   (1) Tokenize the sentence.
+    #   (2) Prepend the `[CLS]` token to the start.
+    #   (3) Append the `[SEP]` token to the end.
+    #   (4) Map tokens to their IDs.
+    #   (5) Pad or truncate the sentence to `max_length`
+    #   (6) Create attention masks for [PAD] tokens.
+    encoded_dict = tokenizer.encode_plus(
+                        sent,                      # Sentence to encode.
+                        add_special_tokens = True, # Add '[CLS]' and '[SEP]'
+                        max_length = 64,           # Pad & truncate all sentences.
+                        pad_to_max_length = True,
+                        return_attention_mask = True,   # Construct attn. masks.
+                        return_tensors = 'pt',     # Return pytorch tensors.
+                   )
+    
+    # Add the encoded sentence to the list.    
+    input_ids.append(encoded_dict['input_ids'])
+    
+    # And its attention mask (simply differentiates padding from non-padding).
+    attention_masks.append(encoded_dict['attention_mask'])
+
+# Convert the lists into tensors.
+input_ids = torch.cat(input_ids, dim=0)
+attention_masks = torch.cat(attention_masks, dim=0)
+labels = torch.tensor(labels)
+
+# Print sentence 0, now as a list of IDs.
+print('Original: ', sentences[0])
+print('Token IDs:', input_ids[0])
+```
+
+```
+Truncation was not explicitly activated but `max_length` is provided a specific value, please use `truncation=True` to explicitly truncate examples to max length. Defaulting to 'longest_first' truncation strategy. If you encode pairs of sequences (GLUE-style) with the tokenizer you can select this strategy more precisely by providing a specific strategy to `truncation`.
+/usr/local/lib/python3.8/dist-packages/transformers/tokenization_utils_base.py:2336: FutureWarning: The `pad_to_max_length` argument is deprecated and will be removed in a future version, use `padding=True` or `padding='longest'` to pad to the longest sequence in the batch, or use `padding='max_length'` to pad to a max length. In this case, you can give a specific length with `max_length` (e.g. `max_length=45`) or leave max_length to None to pad to the maximal input size of the model (e.g. 512 for Bert).
+  warnings.warn(
+Original:  Our friends won't buy this analysis, let alone the next one we propose.
+Token IDs: tensor([  101,  2256,  2814,  2180,  1005,  1056,  4965,  2023,  4106,  1010,
+         2292,  2894,  1996,  2279,  2028,  2057, 16599,  1012,   102,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0])
+```
+
+
+## 3.4. 학습 및 검증 분할
+학습에 90%, 검증에 10%를 사용하도록 학습 세트를 나눕니다.
+
+```Python
+from torch.utils.data import TensorDataset, random_split
+
+# Combine the training inputs into a TensorDataset.
+dataset = TensorDataset(input_ids, attention_masks, labels)
+
+# Create a 90-10 train-validation split.
+
+# Calculate the number of samples to include in each set.
+train_size = int(0.9 * len(dataset))
+val_size = len(dataset) - train_size
+
+# Divide the dataset by randomly selecting samples.
+train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+
+print('{:>5,} training samples'.format(train_size))
+print('{:>5,} validation samples'.format(val_size))
+```
+
+```
+7,695 training samples
+  856 validation samples
+```
+
+우리는 또한 torch DataLoader 클래스를 사용하여 데이터 세트에 대한 iterator를 만들 것이다. 이것은 for 루프와 달리 iterator를 사용하면 전체 데이터 세트를 메모리에 로드할 필요가 없기 때문에 훈련 중 메모리를 절약하는 데 도움이 된다.
+
+```Python
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+
+# The DataLoader needs to know our batch size for training, so we specify it 
+# here. For fine-tuning BERT on a specific task, the authors recommend a batch 
+# size of 16 or 32.
+batch_size = 32
+
+# Create the DataLoaders for our training and validation sets.
+# We'll take training samples in random order. 
+train_dataloader = DataLoader(
+            train_dataset,  # The training samples.
+            sampler = RandomSampler(train_dataset), # Select batches randomly
+            batch_size = batch_size # Trains with this batch size.
+        )
+
+# For validation the order doesn't matter, so we'll just read them sequentially.
+validation_dataloader = DataLoader(
+            val_dataset, # The validation samples.
+            sampler = SequentialSampler(val_dataset), # Pull out batches sequentially.
+            batch_size = batch_size # Evaluate with this batch size.
+        )
+```
+
