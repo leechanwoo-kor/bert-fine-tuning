@@ -5,13 +5,15 @@
 - [목차](#목차)
 
 - [서론](#서론)
-    - [BERT란 무엇인가?](##BERT란-무엇인가?)
-    - [Fine-Tuning의 장점](##-Fine-Tuning의-장점)
-        - [NLP에서의 변화](###-NLP에서의-변화)
-- [1. 설정](#1.-설정)
-    - [1.1. Colab에서 학습을 위한 GPU 사용](##1.1.-Colab에서-학습을-위한-GPU-사용)
-    - [1.2. Hugging Face 라이브러리 설치](##1.2.-Hugging-Face-라이브러리-설치)
-
+    - [BERT란 무엇인가?](#bert란-무엇인가)
+    - [Fine-Tuning의 장점](#fine-tuning의-장점)
+        - [NLP에서의 변화](#nlp에서의-변화)
+- [1. 설정](#1-설정)
+    - [1.1. Colab에서 학습을 위한 GPU 사용](#11-colab에서-학습을-위한-gpu-사용)
+    - [1.2. Hugging Face 라이브러리 설치](#12-hugging-face-라이브러리-설치)
+- [2. CoLA 데이터셋 불러오기](#2-cola-데이터셋-불러오기)
+    - [2.1. 다운로드 및 추출](#21-다운로드-및-추출)
+    - [2.2. 구문 분석](#22-구문-분석)
 
 # 서론
 
@@ -104,7 +106,7 @@ We will use the GPU: Tesla T4
 
 ## 1.2. Hugging Face 라이브러리 설치
 
-다음으로, BERT와 함께 작업하기 위한 pytorch 인터페이스를 제공하는 Hugging Face의 [transformers](https://github.com/huggingface/transformers) 패키지를 설치합시다. (이 라이브러리에는 Open AI의 GPT 및 GPT-2와 같은 다른 사전 훈련된 언어 모델을 위한 인터페이스가 포함되어 있습니다.)
+다음으로, BERT와 함께 작업하기 위한 pytorch 인터페이스를 제공하는 Hugging Face의 [transformers](https://github.com/huggingface/transformers) 패키지를 설치합시다. (이 라이브러리에는 Open AI의 GPT 및 GPT-2와 같은 다른 pre-training된 언어 모델을 위한 인터페이스가 포함되어 있습니다.)
 
 우리가 pytorch 인터페이스를 선택한 이유는 높은 수준의 API(사용하기 쉽지만 어떻게 작동하는지에 대한 통찰력을 제공하지 않음)와 tensorflow 코드때문이다.
 
@@ -118,4 +120,132 @@ We will use the GPU: Tesla T4
 
 ```
 [간소화를 위해 이 output은 삭제했습니다.]
+```
+
+
+# 2. CoLA 데이터셋 불러오기
+
+단일 문장 분류를 위해 The Corpus of Linguistic Acceptability(CoLA) 데이터 세트를 사용합니다. 문법적으로 정확하거나 잘못된 것으로 레이블이 지정된 일련의 문장입니다. 2018년 5월에 처음 공개되었으며 BERT와 같은 모델이 경쟁하는 "GLUE Benchmark"에 포함된 테스트 중 하나입니다.
+
+## 2.1. 다운로드 및 추출
+
+wget 패키지를 사용하여 Colab 인스턴스의 파일 시스템에 데이터세트를 다운로드합니다.
+
+```Python
+!pip install wget
+```
+
+```
+Looking in indexes: https://pypi.org/simple, https://us-python.pkg.dev/colab-wheels/public/simple/
+Collecting wget
+  Downloading wget-3.2.zip (10 kB)
+Building wheels for collected packages: wget
+  Building wheel for wget (setup.py) ... done
+  Created wheel for wget: filename=wget-3.2-py3-none-any.whl size=9674 sha256=6fcd1ffa5fc23b7fc7a11fa4963cacd3d4675bf30315606398577e4ae13b318a
+  Stored in directory: /root/.cache/pip/wheels/bd/a8/c3/3cf2c14a1837a4e04bd98631724e81f33f462d86a1d895fae0
+Successfully built wget
+Installing collected packages: wget
+Successfully installed wget-3.2
+```
+
+데이터베이스는 깃허브의 [https://nyu-mll.github.io/CoLA/](https://nyu-mll.github.io/CoLA/)에서 호스팅됩니다.
+
+```Python
+import wget
+import os
+
+print('Downloading dataset...')
+
+# The URL for the dataset zip file.
+url = 'https://nyu-mll.github.io/CoLA/cola_public_1.1.zip'
+
+# Download the file (if we haven't already)
+if not os.path.exists('./cola_public_1.1.zip'):
+    wget.download(url, './cola_public_1.1.zip')
+```
+
+```
+Downloading dataset...
+```
+
+파일 시스템에 데이터 세트의 압축을 풉니다. 왼쪽 사이드바에서 Colab 인스턴스의 파일 시스템을 탐색할 수 있습니다.
+
+```Python
+# Unzip the dataset (if we haven't already)
+if not os.path.exists('./cola_public/'):
+    !unzip cola_public_1.1.zip
+```
+
+```
+Archive:  cola_public_1.1.zip
+   creating: cola_public/
+  inflating: cola_public/README      
+   creating: cola_public/tokenized/
+  inflating: cola_public/tokenized/in_domain_dev.tsv  
+  inflating: cola_public/tokenized/in_domain_train.tsv  
+  inflating: cola_public/tokenized/out_of_domain_dev.tsv  
+   creating: cola_public/raw/
+  inflating: cola_public/raw/in_domain_dev.tsv  
+  inflating: cola_public/raw/in_domain_train.tsv  
+  inflating: cola_public/raw/out_of_domain_dev.tsv  
+```
+
+## 2.2. 구문 분석
+
+파일 이름을 보면 `tokenized` 버전과 `raw` 버전의 데이터를 모두 사용할 수 있음을 알 수 있습니다.
+
+pre-training된 BERT를 적용하기 위해서는 모델이 제공하는 토크나이저를 사용해야 하기 때문에 사전 토큰화된 버전을 사용할 수 없다. 이는 (1) 모델이 특정하고 고정된 어휘를 가지고 있고 (2) BERT 토크나이저가 OOV(out-of-vocabulary)를 처리하는 특별한 방법을 가지고 있기 때문이다.
+
+```Python
+import pandas as pd
+
+# Load the dataset into a pandas dataframe.
+df = pd.read_csv("./cola_public/raw/in_domain_train.tsv", delimiter='\t', header=None, names=['sentence_source', 'label', 'label_notes', 'sentence'])
+
+# Report the number of sentences.
+print('Number of training sentences: {:,}\n'.format(df.shape[0]))
+
+# Display 10 random rows from the data.
+df.sample(10)
+```
+
+```
+Number of training sentences: 8,551
+```
+
+||sentence_source|label|label_notes|sentence|
+|:---:|:---:|:---:|:---:|:---:|
+|8200|ad03|1|NaN|They kicked themselves|
+|3862|ks08|1|NaN|A big green insect flew into the soup.|
+|8298|ad03|1|NaN|I often have a cold.|
+|6542|g_81|0|*|Which did you buy the table supported the book?|
+|722|bc01|0|*|Home was gone by John.|
+|3693|ks08|1|NaN|I think that person we met last week is insane.|
+|6283|c_13|1|NaN|Kathleen really hates her job.|
+|4118|ks08|1|NaN|Do not use these words in the beginning of a s...|
+|2592|l-93|1|NaN|Jessica sprayed paint under the table.|
+|8194|ad03|0|*|I sent she away.|
+
+우리가 실제로 관심을 갖는 두 가지 속성은 `문장`과 그 `라벨`이며, 이를 "수용성 판단(acceptability judgment)"(0=불수용(unacceptable), 1=수용(acceptable))이라고 한다.
+
+여기 문법적으로 허용되지 않는 것으로 분류된 다섯 개의 문장이 있다. 감정 분석과 같은 것보다 이 작업이 얼마나 더 어려운지 볼 수 있습니다.
+
+```Python
+df.loc[df.label == 0].sample(5)[['sentence', 'label']]
+```
+
+||sentence|label|
+|:---:|:---:|:---:|
+|4867|They investigated.|0|
+|200|The more he reads, the more books I wonder to ...|0|
+|4593|Any zebras can't fly.|0|
+|3226|Cities destroy easily.|0|
+|7337|The time elapsed the day.|0|
+
+학습 세트의 문장과 레이블을 숫자 배열로 추출해 봅시다.
+
+```Python
+# Get the lists of sentences and their labels.
+sentences = df.sentence.values
+labels = df.label.values
 ```
