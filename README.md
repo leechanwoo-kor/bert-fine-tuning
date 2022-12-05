@@ -21,6 +21,8 @@
         - [문장 길이 및 어텐션 마스크](#문장-길이-및-어텐션-마스크)
     - [3.3. 데이터 세트 토큰화](#33-데이터-세트-토큰화)
     - [3.4. 학습 및 검증 분할](#34-학습-및-검증-분할)
+- [4. 분류 모델 학습](#4-분류-모델-학습)
+    - [4.1. BertForSequenceClassification](#41-bertforsequenceclassification)
 
 # 서론
 
@@ -514,5 +516,124 @@ validation_dataloader = DataLoader(
             sampler = SequentialSampler(val_dataset), # Pull out batches sequentially.
             batch_size = batch_size # Evaluate with this batch size.
         )
+```
+
+
+# 4. 분류 모델 학습
+
+입력 데이터의 형식이 제대로 지정되었으니 이제 BERT 모델을 fine-tuning해야 합니다.
+
+
+## 4.1. BertForSequenceClassification
+
+이 작업을 위해 먼저 pre-training된 BERT 모델을 수정하여 분류를 위한 출력을 제공한 다음 전체 모델이 작업에 적합할 때까지 데이터 세트에서 모델을 계속 훈련하고자 한다.
+
+고맙게도 huggingface pytorch 구현은 다양한 NLP 작업을 위해 설계된 인터페이스 세트를 포함한다. 이러한 인터페이스는 모두 훈련된 BERT 모델 위에 구축되지만, 각각은 특정 NLP 작업을 수용하도록 설계된 최상위 계층과 출력 유형이 다르다.
+
+다음은 fine-tuning을 위해 제공되는 클래스의 목록입니다.
+
+BertModel
+BertForPreTraining
+BertForMaskedLM
+BertForNextSentencePrediction
+**BertForSequenceClassification** - 사용할 클래스
+BertForTokenClassification
+BertForQuestionAnswering
+
+이에 대한 문서는 [여기](https://huggingface.co/transformers/v2.2.0/model_doc/bert.html)에서 찾을 수 있습니다.
+
+[BertForSequenceClassification](https://huggingface.co/transformers/v2.2.0/model_doc/bert.html#bertforsequenceclassification)을 사용합니다. 이것은 문장 분류기로 사용할 분류를 위해 위에 단일 선형 레이어가 추가된 일반 BERT 모델이다. 입력 데이터를 공급함에 따라 pre-training된 BERT 모델 전체와 훈련되지 않은 추가 분류 계층이 특정 작업에 대해 훈련된다.
+
+몇 가지 다른 pre-training된 BERT 모델을 사용할 수 있다. "bert-base-ascased"는 소문자만 있는 버전을 의미하며, 둘 중 작은 버전("base" vs "large")입니다.
+
+`from_pretrained`에 대한 문서는 [여기](https://huggingface.co/transformers/v2.2.0/main_classes/model.html#transformers.PreTrainedModel.from_pretrained)에서 찾을 수 있으며, 추가 매개 변수는 [여기](https://huggingface.co/transformers/v2.2.0/main_classes/configuration.html#transformers.PretrainedConfig)에서 정의됩니다.
+
+```Python
+from transformers import BertForSequenceClassification, AdamW, BertConfig
+
+# Load BertForSequenceClassification, the pretrained BERT model with a single 
+# linear classification layer on top. 
+model = BertForSequenceClassification.from_pretrained(
+    "bert-base-uncased", # Use the 12-layer BERT model, with an uncased vocab.
+    num_labels = 2, # The number of output labels--2 for binary classification.
+                    # You can increase this for multi-class tasks.   
+    output_attentions = False, # Whether the model returns attentions weights.
+    output_hidden_states = False, # Whether the model returns all hidden-states.
+)
+
+# Tell pytorch to run this model on the GPU.
+model.cuda()
+```
+
+```
+[간소화를 위해 이 output은 삭제했습니다.]
+```
+
+호기심을 위해, 우리는 여기서 모델의 모든 매개변수를 이름별로 찾아볼 수 있다.
+
+아래 셀에서 다음에 대한 가중치의 이름과 치수를 출력했습니다.
+
+- 임베딩 레이어
+- 12개의 트랜스포머 중 첫 번째
+- 출력 레이어
+
+```Python
+# Get all of the model's parameters as a list of tuples.
+params = list(model.named_parameters())
+
+print('The BERT model has {:} different named parameters.\n'.format(len(params)))
+
+print('==== Embedding Layer ====\n')
+
+for p in params[0:5]:
+    print("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
+
+print('\n==== First Transformer ====\n')
+
+for p in params[5:21]:
+    print("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
+
+print('\n==== Output Layer ====\n')
+
+for p in params[-4:]:
+    print("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
+```
+
+```
+The BERT model has 201 different named parameters.
+
+==== Embedding Layer ====
+
+bert.embeddings.word_embeddings.weight                  (30522, 768)
+bert.embeddings.position_embeddings.weight                (512, 768)
+bert.embeddings.token_type_embeddings.weight                (2, 768)
+bert.embeddings.LayerNorm.weight                              (768,)
+bert.embeddings.LayerNorm.bias                                (768,)
+
+==== First Transformer ====
+
+bert.encoder.layer.0.attention.self.query.weight          (768, 768)
+bert.encoder.layer.0.attention.self.query.bias                (768,)
+bert.encoder.layer.0.attention.self.key.weight            (768, 768)
+bert.encoder.layer.0.attention.self.key.bias                  (768,)
+bert.encoder.layer.0.attention.self.value.weight          (768, 768)
+bert.encoder.layer.0.attention.self.value.bias                (768,)
+bert.encoder.layer.0.attention.output.dense.weight        (768, 768)
+bert.encoder.layer.0.attention.output.dense.bias              (768,)
+bert.encoder.layer.0.attention.output.LayerNorm.weight        (768,)
+bert.encoder.layer.0.attention.output.LayerNorm.bias          (768,)
+bert.encoder.layer.0.intermediate.dense.weight           (3072, 768)
+bert.encoder.layer.0.intermediate.dense.bias                 (3072,)
+bert.encoder.layer.0.output.dense.weight                 (768, 3072)
+bert.encoder.layer.0.output.dense.bias                        (768,)
+bert.encoder.layer.0.output.LayerNorm.weight                  (768,)
+bert.encoder.layer.0.output.LayerNorm.bias                    (768,)
+
+==== Output Layer ====
+
+bert.pooler.dense.weight                                  (768, 768)
+bert.pooler.dense.bias                                        (768,)
+classifier.weight                                           (2, 768)
+classifier.bias                                                 (2,)
 ```
 
