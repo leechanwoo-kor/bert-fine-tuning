@@ -23,6 +23,7 @@
     - [3.4. 학습 및 검증 분할](#34-학습-및-검증-분할)
 - [4. 분류 모델 학습](#4-분류-모델-학습)
     - [4.1. BertForSequenceClassification](#41-bertforsequenceclassification)
+    - [4.2. 최적화 및 학습 속도 스케줄러](#42-최적화-및-학습-속도-스케줄러)
 
 # 서론
 
@@ -637,3 +638,452 @@ classifier.weight                                           (2, 768)
 classifier.bias                                                 (2,)
 ```
 
+## 4.2. 최적화 및 학습 속도 스케줄러
+
+이제 모델이 로드되었으므로 저장된 모델 내에서 훈련 하이퍼 파라미터를 가져와야 합니다. 미세 조정을 위 다음 값 중에서 선택할 것을 권장합니다([BERT 논문](https://arxiv.org/pdf/1810.04805.pdf) 부록 A.3):
+
+> - Batch size: 16, 32
+> - Learning rate (Adam): 5e-5, 3e-5, 2e-5
+> - Number of epochs: 2, 3, 4
+
+다음을 선택했습니다.
+
+- 배치 크기: 32(DataLoader를 생성할 때 설정
+- 학습률: 2e-5
+- lEpochs: 4(이는 아마도 너무 많다는 것을 알게 될 것입니다…)
+
+엡실론 매개변수 `eps = 1e-8` 은 "구현에서 0으로 나누는 것을 막기 위한 매우 작은 숫자"이다.
+
+[여기](https://github.com/huggingface/transformers/blob/5bfcd0485ece086ebcbed2d008813037968a9e58/examples/run_glue.py#L109) `run_glue.py`에서 AdamW 옵티마이저를 찾을 수 있습니다.
+
+```Python
+# Note: AdamW is a class from the huggingface library (as opposed to pytorch) 
+# I believe the 'W' stands for 'Weight Decay fix"
+optimizer = AdamW(model.parameters(),
+                  lr = 2e-5, # args.learning_rate - default is 5e-5, our notebook had 2e-5
+                  eps = 1e-8 # args.adam_epsilon  - default is 1e-8.
+                )
+
+```
+
+```Python
+from transformers import get_linear_schedule_with_warmup
+
+# Number of training epochs. The BERT authors recommend between 2 and 4. 
+# We chose to run for 4, but we'll see later that this may be over-fitting the
+# training data.
+epochs = 4
+
+# Total number of training steps is [number of batches] x [number of epochs]. 
+# (Note that this is not the same as the number of training samples).
+total_steps = len(train_dataloader) * epochs
+
+# Create the learning rate scheduler.
+scheduler = get_linear_schedule_with_warmup(optimizer, 
+                                            num_warmup_steps = 0, # Default value in run_glue.py
+                                            num_training_steps = total_steps)
+```
+
+## 4.3. 학습 루프
+
+아래는 우리의 교육 루프입니다. 많은 일이 일어나고 있지만 기본적으로 루프의 각 패스에 대해 학습 단계와 검증 단계가 있습니다.
+
+**학습:**
+- 데이터 인풋 및 레이블 받기
+- 가속을 위해 GPU에 데이터 로드
+- 이전 패스에서 계산된 그레이디언트를 지웁니다.
+    - 파이토치에서는 명시적으로 그레이디언트를 지우지 않는 한 기본적으로 그레이디언트가 누적됩니다(RNN 등에 유용).
+- Forward pass(네트워크를 통한 피드 입력 데이터)
+- Backward pass(역전파)
+- 네트워크에 Optimizer.step()을 사용하여 매개 변수를 업데이트하도록 지시합니다.
+- 진행 상황 모니터링을 위한 추적 변수
+
+**평가:**
+- 데이터 인풋 및 레이블 받기
+- 가속을 위해 GPU에 데이터 로드
+- Forward pass(네트워크를 통한 피드 입력 데이터)
+- 검증 데이터에 대한 손실 계산 및 진행률 모니터링을 위한 변수 추적
+
+Pytorch는 우리에게 모든 상세한 계산을 숨기지만, 우리는 각 라인에서 위의 단계 중 어떤 것이 일어나고 있는지를 짚기 위해 코드에 주석을 달았습니다.
+
+```Python
+import numpy as np
+
+# Function to calculate the accuracy of our predictions vs labels
+def flat_accuracy(preds, labels):
+    pred_flat = np.argmax(preds, axis=1).flatten()
+    labels_flat = labels.flatten()
+    return np.sum(pred_flat == labels_flat) / len(labels_flat)
+```
+
+`hh:mm:ss`와 같이 경과 시간 형식을 지정하는 도우미 기능
+
+```Python
+import time
+import datetime
+
+def format_time(elapsed):
+    '''
+    Takes a time in seconds and returns a string hh:mm:ss
+    '''
+    # Round to the nearest second.
+    elapsed_rounded = int(round((elapsed)))
+    
+    # Format as hh:mm:ss
+    return str(datetime.timedelta(seconds=elapsed_rounded))
+```
+
+훈련을 시작할 준비가 되었습니다.
+
+```Python
+import random
+import numpy as np
+
+# This training code is based on the `run_glue.py` script here:
+# https://github.com/huggingface/transformers/blob/5bfcd0485ece086ebcbed2d008813037968a9e58/examples/run_glue.py#L128
+
+# Set the seed value all over the place to make this reproducible.
+seed_val = 42
+
+random.seed(seed_val)
+np.random.seed(seed_val)
+torch.manual_seed(seed_val)
+torch.cuda.manual_seed_all(seed_val)
+
+# We'll store a number of quantities such as training and validation loss, 
+# validation accuracy, and timings.
+training_stats = []
+
+# Measure the total training time for the whole run.
+total_t0 = time.time()
+
+# For each epoch...
+for epoch_i in range(0, epochs):
+    
+    # ========================================
+    #               Training
+    # ========================================
+    
+    # Perform one full pass over the training set.
+
+    print("")
+    print('======== Epoch {:} / {:} ========'.format(epoch_i + 1, epochs))
+    print('Training...')
+
+    # Measure how long the training epoch takes.
+    t0 = time.time()
+
+    # Reset the total loss for this epoch.
+    total_train_loss = 0
+
+    # Put the model into training mode. Don't be mislead--the call to 
+    # `train` just changes the *mode*, it doesn't *perform* the training.
+    # `dropout` and `batchnorm` layers behave differently during training
+    # vs. test (source: https://stackoverflow.com/questions/51433378/what-does-model-train-do-in-pytorch)
+    model.train()
+
+    # For each batch of training data...
+    for step, batch in enumerate(train_dataloader):
+
+        # Progress update every 40 batches.
+        if step % 40 == 0 and not step == 0:
+            # Calculate elapsed time in minutes.
+            elapsed = format_time(time.time() - t0)
+            
+            # Report progress.
+            print('  Batch {:>5,}  of  {:>5,}.    Elapsed: {:}.'.format(step, len(train_dataloader), elapsed))
+
+        # Unpack this training batch from our dataloader. 
+        #
+        # As we unpack the batch, we'll also copy each tensor to the GPU using the 
+        # `to` method.
+        #
+        # `batch` contains three pytorch tensors:
+        #   [0]: input ids 
+        #   [1]: attention masks
+        #   [2]: labels 
+        b_input_ids = batch[0].to(device)
+        b_input_mask = batch[1].to(device)
+        b_labels = batch[2].to(device)
+
+        # Always clear any previously calculated gradients before performing a
+        # backward pass. PyTorch doesn't do this automatically because 
+        # accumulating the gradients is "convenient while training RNNs". 
+        # (source: https://stackoverflow.com/questions/48001598/why-do-we-need-to-call-zero-grad-in-pytorch)
+        model.zero_grad()        
+
+        # Perform a forward pass (evaluate the model on this training batch).
+        # The documentation for this `model` function is here: 
+        # https://huggingface.co/transformers/v2.2.0/model_doc/bert.html#transformers.BertForSequenceClassification
+        # It returns different numbers of parameters depending on what arguments
+        # arge given and what flags are set. For our useage here, it returns
+        # the loss (because we provided labels) and the "logits"--the model
+        # outputs prior to activation.
+        loss, logits = model(b_input_ids, 
+                             token_type_ids=None, 
+                             attention_mask=b_input_mask, 
+                             labels=b_labels)
+
+        # Accumulate the training loss over all of the batches so that we can
+        # calculate the average loss at the end. `loss` is a Tensor containing a
+        # single value; the `.item()` function just returns the Python value 
+        # from the tensor.
+        total_train_loss += loss.item()
+
+        # Perform a backward pass to calculate the gradients.
+        loss.backward()
+
+        # Clip the norm of the gradients to 1.0.
+        # This is to help prevent the "exploding gradients" problem.
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+        # Update parameters and take a step using the computed gradient.
+        # The optimizer dictates the "update rule"--how the parameters are
+        # modified based on their gradients, the learning rate, etc.
+        optimizer.step()
+
+        # Update the learning rate.
+        scheduler.step()
+
+    # Calculate the average loss over all of the batches.
+    avg_train_loss = total_train_loss / len(train_dataloader)            
+    
+    # Measure how long this epoch took.
+    training_time = format_time(time.time() - t0)
+
+    print("")
+    print("  Average training loss: {0:.2f}".format(avg_train_loss))
+    print("  Training epcoh took: {:}".format(training_time))
+        
+    # ========================================
+    #               Validation
+    # ========================================
+    # After the completion of each training epoch, measure our performance on
+    # our validation set.
+
+    print("")
+    print("Running Validation...")
+
+    t0 = time.time()
+
+    # Put the model in evaluation mode--the dropout layers behave differently
+    # during evaluation.
+    model.eval()
+
+    # Tracking variables 
+    total_eval_accuracy = 0
+    total_eval_loss = 0
+    nb_eval_steps = 0
+
+    # Evaluate data for one epoch
+    for batch in validation_dataloader:
+        
+        # Unpack this training batch from our dataloader. 
+        #
+        # As we unpack the batch, we'll also copy each tensor to the GPU using 
+        # the `to` method.
+        #
+        # `batch` contains three pytorch tensors:
+        #   [0]: input ids 
+        #   [1]: attention masks
+        #   [2]: labels 
+        b_input_ids = batch[0].to(device)
+        b_input_mask = batch[1].to(device)
+        b_labels = batch[2].to(device)
+        
+        # Tell pytorch not to bother with constructing the compute graph during
+        # the forward pass, since this is only needed for backprop (training).
+        with torch.no_grad():        
+
+            # Forward pass, calculate logit predictions.
+            # token_type_ids is the same as the "segment ids", which 
+            # differentiates sentence 1 and 2 in 2-sentence tasks.
+            # The documentation for this `model` function is here: 
+            # https://huggingface.co/transformers/v2.2.0/model_doc/bert.html#transformers.BertForSequenceClassification
+            # Get the "logits" output by the model. The "logits" are the output
+            # values prior to applying an activation function like the softmax.
+            (loss, logits) = model(b_input_ids, 
+                                   token_type_ids=None, 
+                                   attention_mask=b_input_mask,
+                                   labels=b_labels)
+            
+        # Accumulate the validation loss.
+        total_eval_loss += loss.item()
+
+        # Move logits and labels to CPU
+        logits = logits.detach().cpu().numpy()
+        label_ids = b_labels.to('cpu').numpy()
+
+        # Calculate the accuracy for this batch of test sentences, and
+        # accumulate it over all batches.
+        total_eval_accuracy += flat_accuracy(logits, label_ids)
+        
+
+    # Report the final accuracy for this validation run.
+    avg_val_accuracy = total_eval_accuracy / len(validation_dataloader)
+    print("  Accuracy: {0:.2f}".format(avg_val_accuracy))
+
+    # Calculate the average loss over all of the batches.
+    avg_val_loss = total_eval_loss / len(validation_dataloader)
+    
+    # Measure how long the validation run took.
+    validation_time = format_time(time.time() - t0)
+    
+    print("  Validation Loss: {0:.2f}".format(avg_val_loss))
+    print("  Validation took: {:}".format(validation_time))
+
+    # Record all statistics from this epoch.
+    training_stats.append(
+        {
+            'epoch': epoch_i + 1,
+            'Training Loss': avg_train_loss,
+            'Valid. Loss': avg_val_loss,
+            'Valid. Accur.': avg_val_accuracy,
+            'Training Time': training_time,
+            'Validation Time': validation_time
+        }
+    )
+
+print("")
+print("Training complete!")
+
+print("Total training took {:} (h:mm:ss)".format(format_time(time.time()-total_t0)))
+```
+
+```
+======== Epoch 1 / 4 ========
+Training...
+  Batch    40  of    241.    Elapsed: 0:00:08.
+  Batch    80  of    241.    Elapsed: 0:00:17.
+  Batch   120  of    241.    Elapsed: 0:00:25.
+  Batch   160  of    241.    Elapsed: 0:00:34.
+  Batch   200  of    241.    Elapsed: 0:00:42.
+  Batch   240  of    241.    Elapsed: 0:00:51.
+
+  Average training loss: 0.50
+  Training epcoh took: 0:00:51
+
+Running Validation...
+  Accuracy: 0.80
+  Validation Loss: 0.45
+  Validation took: 0:00:02
+
+======== Epoch 2 / 4 ========
+Training...
+  Batch    40  of    241.    Elapsed: 0:00:08.
+  Batch    80  of    241.    Elapsed: 0:00:17.
+  Batch   120  of    241.    Elapsed: 0:00:25.
+  Batch   160  of    241.    Elapsed: 0:00:34.
+  Batch   200  of    241.    Elapsed: 0:00:42.
+  Batch   240  of    241.    Elapsed: 0:00:51.
+
+  Average training loss: 0.32
+  Training epcoh took: 0:00:51
+
+Running Validation...
+  Accuracy: 0.81
+  Validation Loss: 0.46
+  Validation took: 0:00:02
+
+======== Epoch 3 / 4 ========
+Training...
+  Batch    40  of    241.    Elapsed: 0:00:08.
+  Batch    80  of    241.    Elapsed: 0:00:17.
+  Batch   120  of    241.    Elapsed: 0:00:25.
+  Batch   160  of    241.    Elapsed: 0:00:34.
+  Batch   200  of    241.    Elapsed: 0:00:42.
+  Batch   240  of    241.    Elapsed: 0:00:51.
+
+  Average training loss: 0.22
+  Training epcoh took: 0:00:51
+
+Running Validation...
+  Accuracy: 0.82
+  Validation Loss: 0.49
+  Validation took: 0:00:02
+
+======== Epoch 4 / 4 ========
+Training...
+  Batch    40  of    241.    Elapsed: 0:00:08.
+  Batch    80  of    241.    Elapsed: 0:00:17.
+  Batch   120  of    241.    Elapsed: 0:00:25.
+  Batch   160  of    241.    Elapsed: 0:00:34.
+  Batch   200  of    241.    Elapsed: 0:00:42.
+  Batch   240  of    241.    Elapsed: 0:00:51.
+
+  Average training loss: 0.16
+  Training epcoh took: 0:00:51
+
+Running Validation...
+  Accuracy: 0.82
+  Validation Loss: 0.55
+  Validation took: 0:00:02
+
+Training complete!
+Total training took 0:03:30 (h:mm:ss)
+```
+
+학습 과정의 요약을 살펴보겠습니다.
+
+```Python
+import pandas as pd
+
+# Display floats with two decimal places.
+pd.set_option('precision', 2)
+
+# Create a DataFrame from our training statistics.
+df_stats = pd.DataFrame(data=training_stats)
+
+# Use the 'epoch' as the row index.
+df_stats = df_stats.set_index('epoch')
+
+# A hack to force the column headers to wrap.
+#df = df.style.set_table_styles([dict(selector="th",props=[('max-width', '70px')])])
+
+# Display the table.
+df_stats
+```
+
+|epoch|Training Loss|Valid. Loss|Valid. Accur.|Training Time|Validation Time|
+|:---:|:---:|:---:|:---:|:---:|:---:|
+|1|0.50|0.46|0.81|0:01:18|0:00:03|
+|2|0.30|0.41|0.84|0:01:18|0:00:03|
+|3|0.19|0.48|0.84|0:01:18|0:00:03|
+|4|0.13|0.53|0.84|0:01:18|0:00:03|
+
+Training Loss이 각 epoch에 따라 감소하는 반면, Valid. Loss은 증가하고 있습니다. 이는 우리가 모델을 너무 오랫동안 훈련시키고 있으며, 훈련 데이터에 지나치게 적합하다는 것을 시사한다.
+
+(참고로, 우리는 7,695개의 교육 샘플과 856개의 유효성 검사 샘플을 사용하고 있습니다.
+
+정확도에서는 정확한 출력 값이 아니라 임계값의 어느 쪽에 해당하는지에 대해 신경을 쓰기 때문에 Validation Loss는 정확도보다 더 정확한 측정값입니다.
+
+우리가 정답을 예측하고 있지만 신뢰도가 낮으면 검증 손실은 이를 포착하지만 정확도는 그렇지 않습니다.
+
+```Python
+import matplotlib.pyplot as plt
+% matplotlib inline
+
+import seaborn as sns
+
+# Use plot styling from seaborn.
+sns.set(style='darkgrid')
+
+# Increase the plot size and font size.
+sns.set(font_scale=1.5)
+plt.rcParams["figure.figsize"] = (12,6)
+
+# Plot the learning curve.
+plt.plot(df_stats['Training Loss'], 'b-o', label="Training")
+plt.plot(df_stats['Valid. Loss'], 'g-o', label="Validation")
+
+# Label the plot.
+plt.title("Training & Validation Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.legend()
+plt.xticks([1, 2, 3, 4])
+
+plt.show()
+```
+
+![image](https://user-images.githubusercontent.com/55765292/205912151-3e125cd3-9e50-4466-94c6-749eb532973f.png)
