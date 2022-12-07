@@ -24,6 +24,14 @@
 - [4. 분류 모델 학습](#4-분류-모델-학습)
     - [4.1. BertForSequenceClassification](#41-bertforsequenceclassification)
     - [4.2. 최적화 및 학습 속도 스케줄러](#42-최적화-및-학습-속도-스케줄러)
+- [5. 테스트 세트의 성능](#5-테스트-세트의-성능)
+    - [5.1. 데이터 준비](#51-데이터-준비)
+    - [5.2. 테스트 세트에 대한 평가](#52-테스트-세트에-대한-평가)
+- [결론](#결론)
+- [부록](#부록)
+    - [A1. 미세 조정된 모델 저장 및 로드](#a1-미세-조정된-모델-저장-및-로드)
+    - [A.2. 가중치 감소](#a2-가중치-감소)
+- [추가 작업]
 
 # 서론
 
@@ -43,7 +51,7 @@ BERT를 사용하여 텍스트 분류기를 학습합니다. 구체적으로 pre
     - 첫째, pre-training된 BERT 모델 가중치는 이미 우리 언어에 대한 많은 정보를 인코딩한다. 결과적으로 fine-tuning된 모델을 훈련하는 데 훨씬 적은 시간이 소요된다. 이는 이미 네트워크의 하단 계층을 광범위하게 훈련한 것과 같으며 분류 작업에 대한 기능으로 출력을 사용하면서 조정만 하면 된다.
 
 2. 적은 데이터
-    - 또한 pre-training된 가중치 때문에 이 방법을 사용하면 처음부터 구축된 모델에 필요한 것보다 훨씬 작은 데이터 세트에서 작업을 fine-tuning할 수 있다. 처음부터 구축된 NLP 모델의 주요 단점은 네트워크를 합리적인 정확도로 훈련시키기 위해 종종 엄청나게 큰 데이터 세트가 필요하다는 것이다. 즉, 데이터 세트를 만드는 데 많은 시간과 에너지가 투입되어야 한다는 것이다. BERT를 fine-tuning함으로써 이제 훨씬 적은 양의 학습 데이터에서 우수한 성능을 발휘하도록 모델을 교육하는 것에서 벗어날 수 있다.
+    - 또한 pre-training된 가중치 때문에 이 방법을 사용하면 처음부터 구축된 모델에 필요한 것보다 훨씬 작은 데이터 세트에서 작업을 fine-tuning할 수 있다. 처음부터 구축된 NLP 모델의 주요 단점은 네트워크를 합리적인 정확도로 훈련시키기 위해 종종 엄청나게 큰 데이터 세트가 필요하다는 것이다. 즉, 데이터 세트를 만드는 데 많은 시간과 에너지가 투입되어야 한다는 것이다. BERT를 fine-tuning함으로써 이제 훨씬 적은 양의 학습 데이터에서 우수한 성능을 발휘하도록 모델을 학습하는 것에서 벗어날 수 있다.
 
 3. 더 좋은 결과
     - 마지막으로, 이 간단한 fine-tuning 절차는 분류, 언어 추론, 의미론적 유사성, 질의 응답 등 다양한 작업에 대한 최소한의 작업별 조정으로 우수한 결과를 달성하는 것으로 나타났다. 특정 작업에서 잘 작동하는 것으로 표시된 사용자 지정 및 때로는 모호한 아키텍처를 구현하기보다는 단순히 BERT를 fine-tuning하는 것이 더 나은 또는 최소한 동일한 대안인 것으로 나타났다.
@@ -686,7 +694,7 @@ scheduler = get_linear_schedule_with_warmup(optimizer,
 
 ## 4.3. 학습 루프
 
-아래는 우리의 교육 루프입니다. 많은 일이 일어나고 있지만 기본적으로 루프의 각 패스에 대해 학습 단계와 검증 단계가 있습니다.
+아래는 우리의 학습 루프입니다. 많은 일이 일어나고 있지만 기본적으로 루프의 각 패스에 대해 학습 단계와 검증 단계가 있습니다.
 
 **학습:**
 - 데이터 인풋 및 레이블 받기
@@ -1053,7 +1061,7 @@ df_stats
 
 Training Loss이 각 epoch에 따라 감소하는 반면, Valid. Loss은 증가하고 있습니다. 이는 우리가 모델을 너무 오랫동안 훈련시키고 있으며, 훈련 데이터에 지나치게 적합하다는 것을 시사한다.
 
-(참고로, 우리는 7,695개의 교육 샘플과 856개의 유효성 검사 샘플을 사용하고 있습니다.
+(참고로, 우리는 7,695개의 학습 샘플과 856개의 유효성 검사 샘플을 사용하고 있습니다.
 
 정확도에서는 정확한 출력 값이 아니라 임계값의 어느 쪽에 해당하는지에 대해 신경을 쓰기 때문에 Validation Loss는 정확도보다 더 정확한 측정값입니다.
 
@@ -1087,3 +1095,353 @@ plt.show()
 ```
 
 ![image](https://user-images.githubusercontent.com/55765292/205912151-3e125cd3-9e50-4466-94c6-749eb532973f.png)
+
+
+# 5. 테스트 세트의 성능
+
+이제 학습 세트에서 수행한 것처럼 홀드아웃 데이터 세트를 읽고 인풋을 준비합니다. 그런 다음 [Matthew의 상관 계수](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.matthews_corrcoef.html)를 사용하여 예측을 평가할 것이다.
+
+왜냐하면 이것은 CoLA의 성능을 평가하기 위해 더 넓은 NLP 커뮤니티에서 사용되는 메트릭이기 때문이다. 이 메트릭을 사용하면 +1이 가장 좋은 점수이고 -1이 가장 나쁜 점수입니다. 이러한 방식으로, 우리는 이 특정 작업에 대한 최신 모델에 대해 우리가 얼마나 잘 수행하는지 알 수 있다
+
+
+## 5.1. 데이터 준비
+
+테스트 데이터 세트를 준비하려면 학습 데이터와 동일한 단계를 모두 적용해야 합니다.
+
+```Python
+import pandas as pd
+
+# Load the dataset into a pandas dataframe.
+df = pd.read_csv("./cola_public/raw/out_of_domain_dev.tsv", delimiter='\t', header=None, names=['sentence_source', 'label', 'label_notes', 'sentence'])
+
+# Report the number of sentences.
+print('Number of test sentences: {:,}\n'.format(df.shape[0]))
+
+# Create sentence and label lists
+sentences = df.sentence.values
+labels = df.label.values
+
+# Tokenize all of the sentences and map the tokens to thier word IDs.
+input_ids = []
+attention_masks = []
+
+# For every sentence...
+for sent in sentences:
+    # `encode_plus` will:
+    #   (1) Tokenize the sentence.
+    #   (2) Prepend the `[CLS]` token to the start.
+    #   (3) Append the `[SEP]` token to the end.
+    #   (4) Map tokens to their IDs.
+    #   (5) Pad or truncate the sentence to `max_length`
+    #   (6) Create attention masks for [PAD] tokens.
+    encoded_dict = tokenizer.encode_plus(
+                        sent,                      # Sentence to encode.
+                        add_special_tokens = True, # Add '[CLS]' and '[SEP]'
+                        max_length = 64,           # Pad & truncate all sentences.
+                        pad_to_max_length = True,
+                        return_attention_mask = True,   # Construct attn. masks.
+                        return_tensors = 'pt',     # Return pytorch tensors.
+                   )
+    
+    # Add the encoded sentence to the list.    
+    input_ids.append(encoded_dict['input_ids'])
+    
+    # And its attention mask (simply differentiates padding from non-padding).
+    attention_masks.append(encoded_dict['attention_mask'])
+
+# Convert the lists into tensors.
+input_ids = torch.cat(input_ids, dim=0)
+attention_masks = torch.cat(attention_masks, dim=0)
+labels = torch.tensor(labels)
+
+# Set the batch size.  
+batch_size = 32  
+
+# Create the DataLoader.
+prediction_data = TensorDataset(input_ids, attention_masks, labels)
+prediction_sampler = SequentialSampler(prediction_data)
+prediction_dataloader = DataLoader(prediction_data, sampler=prediction_sampler, batch_size=batch_size)
+```
+
+```
+Number of test sentences: 516
+```
+
+
+## 5.2. 테스트 세트에 대한 평가
+
+테스트 세트가 준비되면 fine-tuning된 모델을 적용하여 테스트 세트에 대한 예측을 생성할 수 있습니다.
+
+```Python
+# Prediction on test set
+
+print('Predicting labels for {:,} test sentences...'.format(len(input_ids)))
+
+# Put model in evaluation mode
+model.eval()
+
+# Tracking variables 
+predictions , true_labels = [], []
+
+# Predict 
+for batch in prediction_dataloader:
+  # Add batch to GPU
+  batch = tuple(t.to(device) for t in batch)
+  
+  # Unpack the inputs from our dataloader
+  b_input_ids, b_input_mask, b_labels = batch
+  
+  # Telling the model not to compute or store gradients, saving memory and 
+  # speeding up prediction
+  with torch.no_grad():
+      # Forward pass, calculate logit predictions
+      outputs = model(b_input_ids, token_type_ids=None, 
+                      attention_mask=b_input_mask)
+
+  logits = outputs[0]
+
+  # Move logits and labels to CPU
+  logits = logits.detach().cpu().numpy()
+  label_ids = b_labels.to('cpu').numpy()
+  
+  # Store predictions and true labels
+  predictions.append(logits)
+  true_labels.append(label_ids)
+
+print('    DONE.')
+```
+
+```
+Predicting labels for 516 test sentences...
+    DONE.
+```
+
+CoLA 벤치마크의 정확도는 "MCC([Mathews Correlation Coefficient](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.matthews_corrcoef.html))"를 사용하여 측정된다.
+
+클래스가 불균형하기 때문에 여기서 MCC를 사용합니다.
+
+```Python
+print('Positive samples: %d of %d (%.2f%%)' % (df.label.sum(), len(df.label), (df.label.sum() / len(df.label) * 100.0)))
+```
+
+```
+Positive samples: 354 of 516 (68.60%)
+```
+
+```Python
+from sklearn.metrics import matthews_corrcoef
+
+matthews_set = []
+
+# Evaluate each test batch using Matthew's correlation coefficient
+print('Calculating Matthews Corr. Coef. for each batch...')
+
+# For each input batch...
+for i in range(len(true_labels)):
+  
+  # The predictions for this batch are a 2-column ndarray (one column for "0" 
+  # and one column for "1"). Pick the label with the highest value and turn this
+  # in to a list of 0s and 1s.
+  pred_labels_i = np.argmax(predictions[i], axis=1).flatten()
+  
+  # Calculate and store the coef for this batch.  
+  matthews = matthews_corrcoef(true_labels[i], pred_labels_i)                
+  matthews_set.append(matthews)
+```
+
+```
+Calculating Matthews Corr. Coef. for each batch...
+
+
+/usr/local/lib/python3.6/dist-packages/sklearn/metrics/_classification.py:900: RuntimeWarning: invalid value encountered in double_scalars
+  mcc = cov_ytyp / np.sqrt(cov_ytyt * cov_ypyp)
+```
+
+최종 점수는 전체 테스트 세트를 기반으로 하지만 배치 간 메트릭의 변동성을 파악하기 위해 개별 배치의 점수를 살펴보도록 하겠습니다.
+
+각 배치에는 32개의 문장이 포함되어 있으며, 마지막 배치에는 (516 % 32) = 4개의 테스트 문장만 포함되어 있다.
+
+```Python
+# Create a barplot showing the MCC score for each batch of test samples.
+ax = sns.barplot(x=list(range(len(matthews_set))), y=matthews_set, ci=None)
+
+plt.title('MCC Score per Batch')
+plt.ylabel('MCC Score (-1 to +1)')
+plt.xlabel('Batch #')
+
+plt.show()
+```
+
+![image](https://user-images.githubusercontent.com/55765292/206164126-f1c3b0b1-6d20-4195-85bc-bc08c9d3fb0a.png)
+
+이제 모든 배치에 대한 결과를 결합하여 최종 MCC score를 계산하겠습니다.
+
+```Python
+# Combine the results across all batches. 
+flat_predictions = np.concatenate(predictions, axis=0)
+
+# For each sample, pick the label (0 or 1) with the higher score.
+flat_predictions = np.argmax(flat_predictions, axis=1).flatten()
+
+# Combine the correct labels for each batch into a single list.
+flat_true_labels = np.concatenate(true_labels, axis=0)
+
+# Calculate the MCC
+mcc = matthews_corrcoef(flat_true_labels, flat_predictions)
+
+print('Total MCC: %.3f' % mcc)
+```
+
+```
+Total MCC: 0.498
+```
+
+좋습니다. 30분 정도면 초 매개변수 조정(학습 속도, 에포크, 배치 크기, ADAM 속성 등)을 하지 않아도 좋은 점수를 얻을 수 있다.
+
+> 참고: 점수를 최대화하려면 "검증 세트"(학습 대상 기간을 결정하는 데 사용)를 제거하고 전체 학습 세트에 대해 학습해야 합니다.
+
+라이브러리는 이 벤치마크에 대한 예상 정확도를 `49.23`으로 문서화합니다.
+
+당신은 또한 [여기](https://gluebenchmark.com/leaderboard/submission/zlssuBTm5XRs0aSKbFYGVIVdvbj1/-LhijX9VVmvJcvzKymxy)서 공식 리더보드를 볼 수 있습니다.
+
+데이터 세트 크기가 작기 때문에 정확도는 실행 간에 크게 달라질 수 있습니다.
+
+
+# 결론
+
+사전 훈련된 BERT 모델을 사용하면 관심 있는 특정 NLP 작업에 관계없이 파이토치 인터페이스를 사용하여 최소한의 노력과 훈련 시간으로 고품질 모델을 빠르고 효과적으로 만들 수 있음을 보여준다.
+
+
+# 부록
+
+## A1. 미세 조정된 모델 저장 및 로드
+
+이 첫 번째 셀([여기](https://github.com/huggingface/transformers/blob/35ff345fc9df9e777b27903f11fa213e4052595b/examples/run_glue.py#L495)서 `run_glue.py`에서 가져온 것)은 모델과 토크나이저를 디스크에 씁니다.
+
+```Python
+import os
+
+# Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
+
+output_dir = './model_save/'
+
+# Create output directory if needed
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+
+print("Saving model to %s" % output_dir)
+
+# Save a trained model, configuration and tokenizer using `save_pretrained()`.
+# They can then be reloaded using `from_pretrained()`
+model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
+model_to_save.save_pretrained(output_dir)
+tokenizer.save_pretrained(output_dir)
+
+# Good practice: save your training arguments together with the trained model
+# torch.save(args, os.path.join(output_dir, 'training_args.bin'))
+```
+
+```
+Saving model to ./model_save/
+
+
+
+
+
+('./model_save/vocab.txt',
+ './model_save/special_tokens_map.json',
+ './model_save/added_tokens.json')
+```
+
+궁금해서 파일 크기를 확인해 봅시다.
+
+```Python
+!ls -l --block-size=K ./model_save/
+```
+
+```
+total 427960K
+-rw-r--r-- 1 root root      2K Mar 18 15:53 config.json
+-rw-r--r-- 1 root root 427719K Mar 18 15:53 pytorch_model.bin
+-rw-r--r-- 1 root root      1K Mar 18 15:53 special_tokens_map.json
+-rw-r--r-- 1 root root      1K Mar 18 15:53 tokenizer_config.json
+-rw-r--r-- 1 root root    227K Mar 18 15:53 vocab.txt
+```
+
+가장 큰 파일은 모델 크기로 약 418MB입니다.
+
+```Python
+!ls -l --block-size=M ./model_save/pytorch_model.bin
+```
+
+```
+-rw-r--r-- 1 root root 418M Mar 18 15:53 ./model_save/pytorch_model.bin
+```
+
+Colab Notebook 세션에서 모델을 저장하려면 모델을 로컬 컴퓨터에 다운로드하거나 Google 드라이브에 복사하는 것이 좋습니다.
+
+```Python
+# Mount Google Drive to this Notebook instance.
+from google.colab import drive
+    drive.mount('/content/drive')
+```
+
+```Python
+# Copy the model files to a directory in your Google Drive.
+!cp -r ./model_save/ "./drive/Shared drives/ChrisMcCormick.AI/Blog Posts/BERT Fine-Tuning/"
+```
+
+다음 기능은 디스크에서 모델을 다시 로드합니다.
+
+```Python
+# Load a trained model and vocabulary that you have fine-tuned
+model = model_class.from_pretrained(output_dir)
+tokenizer = tokenizer_class.from_pretrained(output_dir)
+
+# Copy the model to the GPU.
+model.to(device)
+```
+
+## A.2. 가중치 감소
+
+hugging face의 예제는 가중치 감소를 가능하게 하는 다음과 같은 코드 블록을 포함하지만, 기본 붕괴율은 "0.0"이므로 이것을 부록으로 옮겼다.
+
+이 블록은 본질적으로 옵티마이저에게 편향 항(예: 방정식 $y = Wx + b $의 $ b $)에 가중치 감쇠를 적용하지 말라고 말한다. 가중치 감소는 정규화의 한 형태이다. 그레이디언트를 계산한 후 0.99와 같이 곱한다.
+
+```Python
+# This code is taken from:
+# https://github.com/huggingface/transformers/blob/5bfcd0485ece086ebcbed2d008813037968a9e58/examples/run_glue.py#L102
+
+# Don't apply weight decay to any parameters whose names include these tokens.
+# (Here, the BERT doesn't have `gamma` or `beta` parameters, only `bias` terms)
+no_decay = ['bias', 'LayerNorm.weight']
+
+# Separate the `weight` parameters from the `bias` parameters. 
+# - For the `weight` parameters, this specifies a 'weight_decay_rate' of 0.01. 
+# - For the `bias` parameters, the 'weight_decay_rate' is 0.0. 
+optimizer_grouped_parameters = [
+    # Filter for all parameters which *don't* include 'bias', 'gamma', 'beta'.
+    {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
+     'weight_decay_rate': 0.1},
+    
+    # Filter for parameters which *do* include those.
+    {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
+     'weight_decay_rate': 0.0}
+]
+
+# Note - `optimizer_grouped_parameters` only includes the parameter values, not 
+# the names.
+```
+
+# 추가 작업
+
+- validation accuracy를 위해 MCC score를 사용하는 것이 더 합리적일 수 있지만, 나는 노트에서 그것을 설명할 필요가 없도록 생략했다.
+
+- 시드 – 학습 루프를 시작할 때 시드 값을 설정하는 것이 실제로 재현 가능한 결과를 창출하는지 확신할 수 없습니다.
+
+- MCC score는 실행마다 상당히 다른 것으로 보인다. 이 예제를 여러 번 실행하고 분산을 표시하는 것이 좋습니다.
+
+
+# 인용
+
+Chris McCormick and Nick Ryan. (2019, July 22). BERT Fine-Tuning Tutorial with PyTorch. Retrieved from [http://www.mccormickml.com](http://www.mccormickml.com)
